@@ -6,8 +6,7 @@ overlay on one explicitly selected Wayland output.
 
 ## Requirements
 
-- Linux/Wayland compositor with `zwlr_layer_shell_v1` (KWin, Sway, Hyprland, or
-  another compatible wlroots compositor). GNOME/Mutter is not supported.
+- Linux/Wayland compositor with `zwlr_layer_shell_v1`. See [Compositor Support](https://wayland.app/protocols/wlr-layer-shell-unstable-v1#compositor-support).
 - A working Vulkan or OpenGL wgpu backend.
 - Rust toolchain for building from source.
 - `wayland-info` is useful for finding the exact output name.
