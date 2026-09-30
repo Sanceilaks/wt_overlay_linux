@@ -1,0 +1,64 @@
+name: Rust CI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "src/**/*.rs"
+      - "examples/**/*.rs"
+      - "tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "hud.example.scm"
+      - "assets/fonts/**"
+      - ".github/workflows/rust.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Check, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes pkg-config libwayland-dev
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check all targets
+        run: cargo check --locked --all-targets
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --all-targets
+
+      - name: Build release binary
+        run: cargo build --locked --release
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: wt-overlay-linux-${{ github.sha }}
+          path: target/release/wt-overlay-linux
+          if-no-files-found: error
+          retention-days: 14
