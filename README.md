@@ -64,3 +64,7 @@ TAS, AoA, G-load, altitude, and vertical speed) and the Cyrillic AoA warning.
 
 The renderer embeds Noto Sans Regular/Bold, including Cyrillic glyphs. The font
 license is in `assets/fonts/LICENSE-Noto.txt`.
+
+## Screenshot
+<img width="1420" height="1145" alt="image" src="https://github.com/user-attachments/assets/4594740f-8089-44ee-be57-ac49feef7d0e" />
+
