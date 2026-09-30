@@ -189,8 +189,12 @@ The value may be normalized telemetry, any raw field, or a custom calculation:
   (history t 'fuel (telemetry t 'state "Mfuel, kg") 5000))
 
 (define altitude (telemetry t 'altitude-m))
-(define speed-ms (/ (telemetry t 'tas-kmh) 3.6))
-(define energy (+ altitude (/ (* speed-ms speed-ms) (* 2 9.81))))
+(define tas (telemetry t 'tas-kmh))
+(define energy
+  (if (and (number? altitude) (number? tas))
+      (let ((speed-ms (/ tas 3.6)))
+        (+ altitude (/ (* speed-ms speed-ms) (* 2 9.81))))
+      #f))
 (define energy-history (history t 'energy energy 5000))
 ```
 

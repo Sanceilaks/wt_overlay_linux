@@ -20,7 +20,9 @@
         (vertical-speed (number-or (telemetry t 'vertical-speed-ms) 0)))
     ;; This metric is deliberately implemented here rather than in Rust.
     ;; Replace the accessor, window, and threshold to build other metrics.
-    (let ((speed-history (history t 'ias ias 2000)))
+    ;; Record the raw value: #f skips the sample, whereas the 0 fallback would
+    ;; register a spurious drop whenever IAS is briefly missing.
+    (let ((speed-history (history t 'ias (telemetry t 'ias-kmh) 2000)))
       (let ((speed-delta
               (series-delta speed-history sample-value))
             (speed-span

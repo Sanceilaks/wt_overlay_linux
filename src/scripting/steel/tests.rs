@@ -226,6 +226,25 @@ fn example_speed_loss_warning_waits_for_enough_history() {
 }
 
 #[test]
+fn example_speed_loss_warning_ignores_missing_ias() {
+    let mut engine = SteelHudScriptEngine::new();
+    engine
+        .load(include_str!("../../../hud.example.scm"))
+        .unwrap();
+    let start = Instant::now();
+
+    engine.evaluate(&timed_snapshot(1, start, 300.0)).unwrap();
+    engine
+        .evaluate(&timed_snapshot(2, start + Duration::from_secs(1), 300.0))
+        .unwrap();
+    let mut missing = timed_snapshot(3, start + Duration::from_secs(2), 0.0);
+    missing.ias_kmh = None;
+    let scene = engine.evaluate(&missing).unwrap();
+
+    assert!(scene.nodes.iter().all(|node| node.id != "rapid-speed-loss"));
+}
+
+#[test]
 fn script_reload_preserves_telemetry_history() {
     let mut engine = SteelHudScriptEngine::new();
     engine
