@@ -64,18 +64,3 @@ TAS, AoA, G-load, altitude, and vertical speed) and the Cyrillic AoA warning.
 
 The renderer embeds Noto Sans Regular/Bold, including Cyrillic glyphs. The font
 license is in `assets/fonts/LICENSE-Noto.txt`.
-
-## Verification
-
-```bash
-cargo fmt --all -- --check
-cargo check --all-targets
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-git diff --check
-```
-
-Automated checks cannot validate compositor behavior. Before release, perform the
-manual KWin and wlroots smoke matrix in `PLAN.md`, including click-through,
-transparency, output selection/removal, focus, scale/resolution changes, script
-reload, and War Thunder start/stop cycles.
