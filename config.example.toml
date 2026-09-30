@@ -1,0 +1,8 @@
+# Exact name reported by `wayland-info`.
+output = "DP-1"
+
+# Relative paths are resolved from this configuration file's directory.
+script = "hud.scm"
+
+poll_interval_ms = 100
+request_timeout_ms = 300
