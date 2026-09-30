@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, time::Duration};
 
 use serde_json::Value;
 use steel::{
@@ -11,7 +11,10 @@ use crate::{
     telemetry::{TelemetrySnapshot, TelemetryStatus},
 };
 
-use super::{HudScriptEngine, ScriptError};
+use super::{
+    HudScriptEngine, ScriptError,
+    history::{MAX_HISTORY, SharedMetricHistory},
+};
 
 const HOST_API: &str = r#"
   (define (slot name) (list 'slot name))
@@ -41,6 +44,77 @@ const HOST_API: &str = r#"
     (if (null? raw-key)
         (hud-lookup snapshot field)
         (hud-lookup (hud-lookup snapshot field) (car raw-key))))
+
+  (define (sample-value sample) (telemetry sample 'value))
+
+  ;; History is ordered from oldest to newest. Accessors may read any
+  ;; normalized or raw telemetry field from each sample.
+  (define (hud-series-first samples accessor)
+    (if (null? samples)
+        #f
+        (let ((value (accessor (car samples))))
+          (if (number? value)
+              (list (telemetry (car samples) 'age-ms) value)
+              (hud-series-first (cdr samples) accessor)))))
+
+  (define (hud-series-last samples accessor found)
+    (if (null? samples)
+        found
+        (let ((value (accessor (car samples))))
+          (hud-series-last
+            (cdr samples)
+            accessor
+            (if (number? value)
+                (list (telemetry (car samples) 'age-ms) value)
+                found)))))
+
+  (define (series-delta samples accessor)
+    (let ((first (hud-series-first samples accessor))
+          (last (hud-series-last samples accessor #f)))
+      (if (and first last (> (car first) (car last)))
+          (- (car (cdr last)) (car (cdr first)))
+          #f)))
+
+  (define (series-rate samples accessor)
+    (let ((first (hud-series-first samples accessor))
+          (last (hud-series-last samples accessor #f)))
+      (if (and first last)
+          (let ((elapsed-ms (- (car first) (car last))))
+            (if (> elapsed-ms 0)
+                (/ (* 1000 (- (car (cdr last)) (car (cdr first)))) elapsed-ms)
+                #f))
+          #f)))
+
+  (define (series-span-ms samples accessor)
+    (let ((first (hud-series-first samples accessor))
+          (last (hud-series-last samples accessor #f)))
+      (if (and first last)
+          (- (car first) (car last))
+          0)))
+
+  (define (hud-series-stats samples accessor count sum minimum maximum)
+    (if (null? samples)
+        (list count sum minimum maximum)
+        (let ((value (accessor (car samples))))
+          (if (number? value)
+              (hud-series-stats
+                (cdr samples) accessor (+ count 1) (+ sum value)
+                (if (or (not minimum) (< value minimum)) value minimum)
+                (if (or (not maximum) (> value maximum)) value maximum))
+              (hud-series-stats
+                (cdr samples) accessor count sum minimum maximum)))))
+
+  (define (series-average samples accessor)
+    (let ((stats (hud-series-stats samples accessor 0 0 #f #f)))
+      (if (> (car stats) 0)
+          (/ (car (cdr stats)) (car stats))
+          #f)))
+
+  (define (series-min samples accessor)
+    (car (cdr (cdr (hud-series-stats samples accessor 0 0 #f #f)))))
+
+  (define (series-max samples accessor)
+    (car (cdr (cdr (cdr (hud-series-stats samples accessor 0 0 #f #f))))))
 "#;
 
 /// Sandboxed Steel adapter. A successful first evaluation activates the staged engine, so
@@ -48,6 +122,7 @@ const HOST_API: &str = r#"
 pub struct SteelHudScriptEngine {
     active: Option<Engine>,
     staged: Option<Engine>,
+    history: SharedMetricHistory,
 }
 
 impl Default for SteelHudScriptEngine {
@@ -57,19 +132,26 @@ impl Default for SteelHudScriptEngine {
 }
 
 impl SteelHudScriptEngine {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             active: None,
             staged: None,
+            history: SharedMetricHistory::default(),
         }
     }
 
-    fn candidate() -> Result<Engine, ScriptError> {
+    fn candidate(history: SharedMetricHistory) -> Result<Engine, ScriptError> {
         let mut engine = Engine::new_sandboxed();
         engine.register_fn(
             "format-value",
             |prefix: String, value: SteelVal, precision: SteelVal, suffix: String| {
                 format_value(&prefix, &value, &precision, &suffix)
+            },
+        );
+        engine.register_fn(
+            "history",
+            move |_telemetry: SteelVal, name: SteelVal, value: SteelVal, window_ms: SteelVal| {
+                history_value(&history, &name, &value, &window_ms)
             },
         );
         engine
@@ -81,7 +163,7 @@ impl SteelHudScriptEngine {
 
 impl HudScriptEngine for SteelHudScriptEngine {
     fn load(&mut self, source: &str) -> Result<(), ScriptError> {
-        let mut candidate = Self::candidate()?;
+        let mut candidate = Self::candidate(self.history.clone())?;
         candidate
             .run(source.to_owned())
             .map_err(|error| steel_error(&candidate, error, true))?;
@@ -105,13 +187,14 @@ impl HudScriptEngine for SteelHudScriptEngine {
     }
 
     fn evaluate(&mut self, telemetry: &TelemetrySnapshot) -> Result<TextScene, ScriptError> {
+        self.history.begin_evaluation(telemetry);
         if telemetry.status == TelemetryStatus::Hangar {
             return Ok(TextScene {
                 revision: telemetry.revision,
                 nodes: Vec::new(),
             });
         }
-        let argument = telemetry_value(telemetry);
+        let argument = telemetry_value(telemetry, Duration::ZERO);
         if let Some(mut candidate) = self.staged.take() {
             let result = evaluate_engine(&mut candidate, argument.clone(), telemetry.revision);
             if result.is_ok() {
@@ -183,7 +266,50 @@ fn steel_integer(value: &SteelVal, name: &str) -> Result<isize, String> {
     }
 }
 
-fn telemetry_value(snapshot: &TelemetrySnapshot) -> SteelVal {
+fn history_value(
+    history: &SharedMetricHistory,
+    name: &SteelVal,
+    value: &SteelVal,
+    window_ms: &SteelVal,
+) -> Result<SteelVal, String> {
+    let name = match name {
+        SteelVal::StringV(value) | SteelVal::SymbolV(value) => value.to_string(),
+        _ => return Err("history: name must be a symbol or string".into()),
+    };
+    let value = match value {
+        SteelVal::BoolV(false) => None,
+        SteelVal::NumV(value) if value.is_finite() => Some(*value),
+        SteelVal::IntV(value) => Some(*value as f64),
+        _ => return Err("history: value must be a finite number or #f".into()),
+    };
+    let window_ms = match window_ms {
+        SteelVal::NumV(value) if value.is_finite() => *value,
+        SteelVal::IntV(value) => *value as f64,
+        _ => return Err("history: window-ms must be a finite number".into()),
+    };
+    let maximum_ms = MAX_HISTORY.as_secs_f64() * 1000.0;
+    if !(0.0..=maximum_ms).contains(&window_ms) {
+        return Err(format!(
+            "history: window-ms must be between 0 and {maximum_ms}"
+        ));
+    }
+
+    Ok(list(
+        history
+            .series(&name, value, Duration::from_secs_f64(window_ms / 1000.0))
+            .iter()
+            .map(|(age, value)| metric_sample_value(*age, *value)),
+    ))
+}
+
+fn metric_sample_value(age: Duration, value: f64) -> SteelVal {
+    list([
+        entry("age-ms", SteelVal::NumV(age.as_secs_f64() * 1000.0)),
+        entry("value", SteelVal::NumV(value)),
+    ])
+}
+
+fn telemetry_value(snapshot: &TelemetrySnapshot, age: Duration) -> SteelVal {
     let status = match snapshot.status {
         TelemetryStatus::Disconnected => "disconnected",
         TelemetryStatus::Invalid => "invalid",
@@ -193,6 +319,7 @@ fn telemetry_value(snapshot: &TelemetrySnapshot) -> SteelVal {
     };
     list([
         entry("revision", SteelVal::IntV(snapshot.revision as isize)),
+        entry("age-ms", SteelVal::NumV(age.as_secs_f64() * 1000.0)),
         entry("status", symbol(status)),
         entry("ias-kmh", optional_number(snapshot.ias_kmh)),
         entry("tas-kmh", optional_number(snapshot.tas_kmh)),

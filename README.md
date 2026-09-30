@@ -60,10 +60,27 @@ It controls values, semantic slots, order, visibility, color, size, normal/bold
 weight, shadow, and blink frequency. Pixel coordinates and native plugins are
 intentionally unavailable. See `hud.example.scm` for all six MVP values (IAS,
 TAS, AoA, G-load, altitude, and vertical speed) and the Cyrillic AoA warning.
+The complete scripting API and custom-metric examples are documented in
+[`SCRIPTING.md`](SCRIPTING.md).
 
 The renderer embeds Noto Sans Regular/Bold, including Cyrillic glyphs. The font
 license is in `assets/fonts/LICENSE-Noto.txt`.
 
+### Custom metrics from history
+
+`(history telemetry name value window-ms)` records one explicitly named numeric
+value and returns its samples from the requested window (up to 30 seconds),
+ordered oldest to newest. `value` may come from a normalized field, any raw
+`state`/`indicators` field, or an arbitrary Steel calculation. Only series named
+by the script are retained; complete telemetry snapshots are not stored. Every
+sample has `age-ms` and `value` fields, with `sample-value` as a convenient
+accessor. Generic helpers `series-delta`, `series-rate`, `series-span-ms`,
+`series-average`, `series-min`, and `series-max` accept samples and an accessor
+function. Rates are per second; use the span helper when a metric requires a
+sufficiently complete window. History resets when telemetry is inactive or
+discontinuous. A series retained under the same name survives script reloads;
+newly declared series start empty and warm up normally. `hud.example.scm`
+demonstrates a two-second IAS-loss warning implemented entirely in Steel.
+
 ## Screenshot
 <img width="1420" height="1145" alt="image" src="https://github.com/user-attachments/assets/4594740f-8089-44ee-be57-ac49feef7d0e" />
-

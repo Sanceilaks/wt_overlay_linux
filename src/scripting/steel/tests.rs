@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::*;
 use crate::telemetry::RawTelemetry;
@@ -16,6 +16,14 @@ fn snapshot(aoa: f64) -> TelemetrySnapshot {
         vertical_speed_ms: Some(-12.3),
         raw: RawTelemetry::default(),
     }
+}
+
+fn timed_snapshot(revision: u64, received_at: Instant, ias_kmh: f64) -> TelemetrySnapshot {
+    let mut snapshot = snapshot(0.0);
+    snapshot.revision = revision;
+    snapshot.received_at = received_at;
+    snapshot.ias_kmh = Some(ias_kmh);
+    snapshot
 }
 
 #[test]
@@ -127,4 +135,128 @@ fn evaluation_failure_keeps_the_previous_program() {
         .unwrap();
     assert!(engine.evaluate(&snapshot(0.0)).is_err());
     assert_eq!(engine.evaluate(&snapshot(0.0)).unwrap().nodes[0].id, "old");
+}
+
+#[test]
+fn scripts_can_compute_generic_deltas_and_rates_from_history() {
+    let mut engine = SteelHudScriptEngine::new();
+    engine
+        .load(
+            r#"
+              (define (ias sample) (telemetry sample 'ias-kmh))
+              (define (build-hud t)
+                (let ((samples (history t 'ias (telemetry t 'ias-kmh) 2000)))
+                  (list
+                    (text 'delta (slot 'crosshair-top)
+                      (value (format-value "" (series-delta samples sample-value) 0 "")))
+                    (text 'rate (slot 'crosshair-bottom)
+                      (value (format-value "" (series-rate samples sample-value) 0 ""))))))
+            "#,
+        )
+        .unwrap();
+    let start = Instant::now();
+
+    assert!(engine.evaluate(&timed_snapshot(1, start, 320.0)).is_err());
+    let scene = engine
+        .evaluate(&timed_snapshot(2, start + Duration::from_secs(1), 280.0))
+        .unwrap();
+
+    assert_eq!(scene.nodes[0].text, "-40");
+    assert_eq!(scene.nodes[1].text, "-40");
+}
+
+#[test]
+fn history_supports_raw_telemetry_fields() {
+    let mut engine = SteelHudScriptEngine::new();
+    engine
+        .load(
+            r#"
+              (define (build-hud t)
+                (let ((delta
+                        (series-delta
+                          (history t 'fuel (telemetry t 'state "fuel") 5000)
+                          sample-value)))
+                  (list (text 'fuel (slot 'crosshair-top)
+                    (value (format-value "" delta 0 ""))))))
+            "#,
+        )
+        .unwrap();
+    let start = Instant::now();
+    let mut first = timed_snapshot(1, start, 300.0);
+    first.raw.state.insert("fuel".into(), 100.into());
+    let mut second = timed_snapshot(2, start + Duration::from_secs(1), 300.0);
+    second.raw.state.insert("fuel".into(), 91.into());
+
+    assert!(engine.evaluate(&first).is_err());
+    let scene = engine.evaluate(&second).unwrap();
+    assert_eq!(scene.nodes[0].text, "-9");
+}
+
+#[test]
+fn example_speed_loss_warning_waits_for_enough_history() {
+    let mut engine = SteelHudScriptEngine::new();
+    engine
+        .load(include_str!("../../../hud.example.scm"))
+        .unwrap();
+    let start = Instant::now();
+
+    let early = engine
+        .evaluate(&timed_snapshot(
+            1,
+            start + Duration::from_millis(100),
+            300.0,
+        ))
+        .unwrap();
+    assert!(early.nodes.iter().all(|node| node.id != "rapid-speed-loss"));
+
+    engine
+        .evaluate(&timed_snapshot(2, start + Duration::from_secs(1), 280.0))
+        .unwrap();
+    let warned = engine
+        .evaluate(&timed_snapshot(3, start + Duration::from_secs(2), 240.0))
+        .unwrap();
+
+    let warning = warned
+        .nodes
+        .iter()
+        .find(|node| node.id == "rapid-speed-loss")
+        .unwrap();
+    assert_eq!(warning.text, "БЫСТРАЯ ПОТЕРЯ СКОРОСТИ -60 km/h");
+    assert_eq!(warning.style.blink_hz, Some(3.0));
+}
+
+#[test]
+fn script_reload_preserves_telemetry_history() {
+    let mut engine = SteelHudScriptEngine::new();
+    engine
+        .load(
+            r#"
+              (define (build-hud t)
+                (let ((tracked (history t 'ias (telemetry t 'ias-kmh) 2000)))
+                  (list)))
+            "#,
+        )
+        .unwrap();
+    let start = Instant::now();
+    engine.evaluate(&timed_snapshot(1, start, 300.0)).unwrap();
+
+    engine
+        .load(
+            r#"
+              (define (build-hud t)
+                (list (text 'delta (slot 'crosshair-top)
+                  (value
+                    (format-value ""
+                      (series-delta
+                        (history t 'ias (telemetry t 'ias-kmh) 2000)
+                        sample-value)
+                      0 "")))))
+            "#,
+        )
+        .unwrap();
+    let scene = engine
+        .evaluate(&timed_snapshot(2, start + Duration::from_secs(1), 275.0))
+        .unwrap();
+
+    assert_eq!(scene.nodes[0].text, "-25");
 }
