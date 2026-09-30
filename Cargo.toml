@@ -2,6 +2,24 @@
 name = "wt_overlay_linux"
 version = "0.1.0"
 edition = "2024"
+description = "A scriptable Wayland HUD overlay for War Thunder telemetry"
+license = "WTFPL"
+repository = "https://github.com/Sanceilaks/wt_overlay_linux"
+keywords = ["war-thunder", "wayland", "hud", "overlay", "telemetry"]
+categories = ["games", "visualization"]
+include = [
+  "src/**/*.rs",
+  "examples/**/*.rs",
+  "tests/fixtures/**",
+  "assets/fonts/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "README.md",
+  "SCRIPTING.md",
+  "LICENSE",
+  "config.example.toml",
+  "hud.example.scm",
+]
 
 [dependencies]
 anyhow = "1.0.100"
