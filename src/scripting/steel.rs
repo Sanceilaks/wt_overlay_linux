@@ -14,6 +14,7 @@ use crate::{
 use super::{
     HudScriptEngine, ScriptError,
     history::{MAX_HISTORY, SharedMetricHistory},
+    stateful::{EdgeDirection, MAX_STATE_DURATION, SharedStatefulValues},
 };
 
 const HOST_API: &str = r#"
@@ -123,6 +124,7 @@ pub struct SteelHudScriptEngine {
     active: Option<Engine>,
     staged: Option<Engine>,
     history: SharedMetricHistory,
+    stateful: SharedStatefulValues,
 }
 
 impl Default for SteelHudScriptEngine {
@@ -137,10 +139,14 @@ impl SteelHudScriptEngine {
             active: None,
             staged: None,
             history: SharedMetricHistory::default(),
+            stateful: SharedStatefulValues::default(),
         }
     }
 
-    fn candidate(history: SharedMetricHistory) -> Result<Engine, ScriptError> {
+    fn candidate(
+        history: SharedMetricHistory,
+        stateful: SharedStatefulValues,
+    ) -> Result<Engine, ScriptError> {
         let mut engine = Engine::new_sandboxed();
         engine.register_fn(
             "format-value",
@@ -154,6 +160,53 @@ impl SteelHudScriptEngine {
                 history_value(&history, &name, &value, &window_ms)
             },
         );
+        let edge_state = stateful.clone();
+        engine.register_fn(
+            "trigger-edge",
+            move |key: SteelVal, value: SteelVal, direction: SteelVal| {
+                trigger_edge_value(&edge_state, &key, &value, &direction)
+            },
+        );
+        let hold_state = stateful.clone();
+        engine.register_fn(
+            "hold",
+            move |key: SteelVal, value: SteelVal, duration_ms: SteelVal| {
+                hold_value(&hold_state, &key, &value, &duration_ms)
+            },
+        );
+        let debounce_state = stateful.clone();
+        engine.register_fn(
+            "debounce",
+            move |key: SteelVal, value: SteelVal, duration_ms: SteelVal| {
+                debounce_value(&debounce_state, &key, &value, &duration_ms)
+            },
+        );
+        engine.register_fn(
+            "ema-filter",
+            move |key: SteelVal, value: SteelVal, alpha: SteelVal| {
+                ema_value(&stateful, &key, &value, &alpha)
+            },
+        );
+        engine.register_fn(
+            "clamp",
+            |value: SteelVal, minimum: SteelVal, maximum: SteelVal| {
+                clamp_value(&value, &minimum, &maximum)
+            },
+        );
+        engine.register_fn(
+            "lerp",
+            |start: SteelVal, end: SteelVal, amount: SteelVal| lerp_value(&start, &end, &amount),
+        );
+        engine.register_fn(
+            "color-lerp",
+            |start: String, end: String, amount: SteelVal| color_lerp_value(&start, &end, &amount),
+        );
+        engine.register_fn(
+            "style-blend",
+            |start: SteelVal, end: SteelVal, amount: SteelVal| {
+                style_blend_value(&start, &end, &amount)
+            },
+        );
         engine
             .run(HOST_API)
             .map_err(|error| steel_error(&engine, error, true))?;
@@ -163,7 +216,7 @@ impl SteelHudScriptEngine {
 
 impl HudScriptEngine for SteelHudScriptEngine {
     fn load(&mut self, source: &str) -> Result<(), ScriptError> {
-        let mut candidate = Self::candidate(self.history.clone())?;
+        let mut candidate = Self::candidate(self.history.clone(), self.stateful.clone())?;
         candidate
             .run(source.to_owned())
             .map_err(|error| steel_error(&candidate, error, true))?;
@@ -188,6 +241,7 @@ impl HudScriptEngine for SteelHudScriptEngine {
 
     fn evaluate(&mut self, telemetry: &TelemetrySnapshot) -> Result<TextScene, ScriptError> {
         self.history.begin_evaluation(telemetry);
+        self.stateful.begin_evaluation(telemetry);
         if telemetry.status == TelemetryStatus::Hangar {
             return Ok(TextScene {
                 revision: telemetry.revision,
@@ -264,6 +318,227 @@ fn steel_integer(value: &SteelVal, name: &str) -> Result<isize, String> {
             "format-value: {name} must be an integer, got {value}"
         )),
     }
+}
+
+fn trigger_edge_value(
+    stateful: &SharedStatefulValues,
+    key: &SteelVal,
+    value: &SteelVal,
+    direction: &SteelVal,
+) -> Result<bool, String> {
+    let key = state_key(key, "trigger-edge")?;
+    let value = state_bool(value, "trigger-edge", "value")?;
+    let direction = match state_key(direction, "trigger-edge")?.as_str() {
+        "rising" => EdgeDirection::Rising,
+        "falling" => EdgeDirection::Falling,
+        _ => return Err("trigger-edge: direction must be 'rising or 'falling".into()),
+    };
+    Ok(stateful.edge(&key, value, direction))
+}
+
+fn hold_value(
+    stateful: &SharedStatefulValues,
+    key: &SteelVal,
+    value: &SteelVal,
+    duration_ms: &SteelVal,
+) -> Result<bool, String> {
+    let key = state_key(key, "hold")?;
+    let value = state_bool(value, "hold", "value")?;
+    let duration = state_duration(duration_ms, "hold")?;
+    Ok(stateful.hold(&key, value, duration))
+}
+
+fn debounce_value(
+    stateful: &SharedStatefulValues,
+    key: &SteelVal,
+    value: &SteelVal,
+    duration_ms: &SteelVal,
+) -> Result<bool, String> {
+    let key = state_key(key, "debounce")?;
+    let value = state_bool(value, "debounce", "value")?;
+    let duration = state_duration(duration_ms, "debounce")?;
+    Ok(stateful.debounce(&key, value, duration))
+}
+
+fn ema_value(
+    stateful: &SharedStatefulValues,
+    key: &SteelVal,
+    value: &SteelVal,
+    alpha: &SteelVal,
+) -> Result<SteelVal, String> {
+    let key = state_key(key, "ema-filter")?;
+    if matches!(value, SteelVal::BoolV(false)) {
+        return Ok(SteelVal::BoolV(false));
+    }
+    let value = state_number(value, "ema-filter", "value")?;
+    let alpha = state_number(alpha, "ema-filter", "alpha")?;
+    if !(0.0..=1.0).contains(&alpha) {
+        return Err("ema-filter: alpha must be between 0 and 1".into());
+    }
+    Ok(stateful
+        .ema(&key, value, alpha)
+        .map_or(SteelVal::BoolV(false), SteelVal::NumV))
+}
+
+fn clamp_value(value: &SteelVal, minimum: &SteelVal, maximum: &SteelVal) -> Result<f64, String> {
+    let value = state_number(value, "clamp", "value")?;
+    let minimum = state_number(minimum, "clamp", "minimum")?;
+    let maximum = state_number(maximum, "clamp", "maximum")?;
+    if minimum > maximum {
+        return Err("clamp: minimum must not exceed maximum".into());
+    }
+    Ok(value.clamp(minimum, maximum))
+}
+
+fn lerp_value(start: &SteelVal, end: &SteelVal, amount: &SteelVal) -> Result<f64, String> {
+    let start = state_number(start, "lerp", "start")?;
+    let end = state_number(end, "lerp", "end")?;
+    let amount = state_number(amount, "lerp", "amount")?;
+    Ok(start + (end - start) * amount)
+}
+
+fn color_lerp_value(start: &str, end: &str, amount: &SteelVal) -> Result<String, String> {
+    let start = Rgba::from_str(start).map_err(|error| format!("color-lerp: {error}"))?;
+    let end = Rgba::from_str(end).map_err(|error| format!("color-lerp: {error}"))?;
+    let amount = blend_amount(amount, "color-lerp")?;
+    Ok(format_color(blend_color(start, end, amount)))
+}
+
+fn style_blend_value(
+    start: &SteelVal,
+    end: &SteelVal,
+    amount: &SteelVal,
+) -> Result<SteelVal, String> {
+    let start = decode_style(start).map_err(|error| format!("style-blend: {error}"))?;
+    let end = decode_style(end).map_err(|error| format!("style-blend: {error}"))?;
+    let amount = blend_amount(amount, "style-blend")?;
+    let style = TextStyle {
+        foreground: blend_color(start.foreground, end.foreground, amount),
+        font_size: lerp_f32(start.font_size, end.font_size, amount),
+        weight: if amount < 0.5 {
+            start.weight
+        } else {
+            end.weight
+        },
+        shadow: blend_shadow(start.shadow, end.shadow, amount),
+        blink_hz: match (start.blink_hz, end.blink_hz) {
+            (Some(start), Some(end)) => Some(lerp_f32(start, end, amount)),
+            (start, end) => {
+                if amount < 0.5 {
+                    start
+                } else {
+                    end
+                }
+            }
+        },
+    };
+    Ok(encode_style(&style))
+}
+
+fn blend_amount(value: &SteelVal, function: &str) -> Result<f64, String> {
+    let amount = state_number(value, function, "factor")?;
+    if !(0.0..=1.0).contains(&amount) {
+        return Err(format!("{function}: factor must be between 0 and 1"));
+    }
+    Ok(amount)
+}
+
+fn blend_color(start: Rgba, end: Rgba, amount: f64) -> Rgba {
+    Rgba {
+        red: lerp_f32(start.red, end.red, amount),
+        green: lerp_f32(start.green, end.green, amount),
+        blue: lerp_f32(start.blue, end.blue, amount),
+        alpha: lerp_f32(start.alpha, end.alpha, amount),
+    }
+}
+
+fn blend_shadow(start: Option<Rgba>, end: Option<Rgba>, amount: f64) -> Option<Rgba> {
+    match (start, end) {
+        (Some(start), Some(end)) => Some(blend_color(start, end, amount)),
+        (Some(mut start), None) if amount < 1.0 => {
+            start.alpha *= 1.0 - amount as f32;
+            Some(start)
+        }
+        (None, Some(mut end)) if amount > 0.0 => {
+            end.alpha *= amount as f32;
+            Some(end)
+        }
+        _ => None,
+    }
+}
+
+fn lerp_f32(start: f32, end: f32, amount: f64) -> f32 {
+    start + (end - start) * amount as f32
+}
+
+fn encode_style(style: &TextStyle) -> SteelVal {
+    list([
+        symbol("style"),
+        list([
+            symbol("foreground"),
+            SteelVal::StringV(format_color(style.foreground).into()),
+        ]),
+        list([symbol("font-size"), SteelVal::NumV(style.font_size as f64)]),
+        list([symbol("font-weight"), symbol(style.weight.as_str())]),
+        list([
+            symbol("shadow"),
+            style.shadow.map_or(SteelVal::BoolV(false), |color| {
+                SteelVal::StringV(format_color(color).into())
+            }),
+        ]),
+        list([
+            symbol("blink-hz"),
+            style
+                .blink_hz
+                .map_or(SteelVal::BoolV(false), |value| SteelVal::NumV(value as f64)),
+        ]),
+    ])
+}
+
+fn format_color(color: Rgba) -> String {
+    let component = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let red = component(color.red);
+    let green = component(color.green);
+    let blue = component(color.blue);
+    let alpha = component(color.alpha);
+    if alpha == u8::MAX {
+        format!("#{red:02x}{green:02x}{blue:02x}")
+    } else {
+        format!("#{red:02x}{green:02x}{blue:02x}{alpha:02x}")
+    }
+}
+
+fn state_key(value: &SteelVal, function: &str) -> Result<String, String> {
+    match value {
+        SteelVal::StringV(value) | SteelVal::SymbolV(value) => Ok(value.to_string()),
+        _ => Err(format!("{function}: key must be a symbol or string")),
+    }
+}
+
+fn state_bool(value: &SteelVal, function: &str, name: &str) -> Result<bool, String> {
+    match value {
+        SteelVal::BoolV(value) => Ok(*value),
+        _ => Err(format!("{function}: {name} must be a boolean")),
+    }
+}
+
+fn state_number(value: &SteelVal, function: &str, name: &str) -> Result<f64, String> {
+    match value {
+        SteelVal::NumV(value) if value.is_finite() => Ok(*value),
+        SteelVal::IntV(value) => Ok(*value as f64),
+        _ => Err(format!("{function}: {name} must be a finite number")),
+    }
+}
+
+fn state_duration(value: &SteelVal, function: &str) -> Result<Duration, String> {
+    let milliseconds = state_number(value, function, "duration-ms")?;
+    let maximum = MAX_STATE_DURATION.as_secs_f64() * 1000.0;
+    if !(0.0..=maximum).contains(&milliseconds) {
+        return Err(format!(
+            "{function}: duration-ms must be between 0 and {maximum}"
+        ));
+    }
+    Ok(Duration::from_secs_f64(milliseconds / 1000.0))
 }
 
 fn history_value(

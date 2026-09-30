@@ -1,6 +1,7 @@
 mod engine;
 mod history;
 mod runtime;
+mod stateful;
 mod steel;
 mod worker;
 

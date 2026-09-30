@@ -55,6 +55,8 @@
                 (format-value "БЫСТРАЯ ПОТЕРЯ СКОРОСТИ " speed-delta 0 " km/h")
                 ""))
           (visible
-            (and (number? speed-delta) (>= speed-span 1500)
-                 (< speed-delta -40)))
+            (hold 'rapid-speed-loss-warning
+              (and (number? speed-delta) (>= speed-span 1500)
+                   (< speed-delta -40))
+              2000))
           (text-style danger)))))))

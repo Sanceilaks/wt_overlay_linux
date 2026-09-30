@@ -69,6 +69,31 @@ Create reusable styles with `style`, then attach one using `text-style`:
 - Blink frequency must be between 0.1 and 20 Hz; `(blink-hz #f)` disables it.
 - Defaults are white, size 22, normal weight, black 80% shadow, and no blink.
 
+### Dynamic styles
+
+Use `(color-lerp start end factor)` to interpolate RGBA colors. `factor` must be
+between 0 and 1:
+
+```scheme
+(define g-factor (clamp (/ (- g 4) 5) 0 1))
+(define g-color (color-lerp "#00ff00" "#ff0000" g-factor))
+(define dynamic (style (foreground g-color) (font-weight 'bold)))
+```
+
+`(style-blend style-a style-b factor)` interpolates complete styles. Foreground,
+font size, shadow color/alpha, and two numeric blink frequencies transition
+smoothly. A missing shadow fades in or out. Font weight and optional blinking
+switch to the nearest endpoint at the midpoint.
+
+```scheme
+(define calm (style (foreground "#00ff00") (font-size 20)))
+(define danger
+  (style (foreground "#ff0000") (font-size 28) (font-weight 'bold)))
+(define dynamic (style-blend calm danger g-factor))
+```
+
+Missing style properties use their normal defaults before blending.
+
 ## Layout Slots
 
 Nodes in the same slot stack in declaration order. Available slots are:
@@ -104,6 +129,45 @@ visibility dependent on the original value:
           (value (format-value "IAS " ias 0 " km/h"))
           (visible (number? ias-raw)))))))
 ```
+
+## Stateful Conditions and Smoothing
+
+Stateful functions require a unique symbol or string key. The key identifies
+the stored state across evaluations and hot reloads. Call a key once per
+`build-hud` evaluation and do not reuse it for unrelated values.
+
+```scheme
+(trigger-edge key condition 'rising)  ; or 'falling
+(hold key condition duration-ms)
+(debounce key condition duration-ms)
+(ema-filter key value alpha)
+```
+
+- `trigger-edge` returns `#t` for exactly one telemetry tick when the requested
+  transition occurs. Its first observation establishes a baseline.
+- `hold` returns `#t` while the condition is true and for the requested duration
+  after its most recent true sample.
+- `debounce` returns `#t` only after the condition has remained continuously
+  true for the requested duration. A false sample resets its timer.
+- `ema-filter` computes `alpha * value + (1 - alpha) * previous`. The first
+  sample is returned unchanged; `alpha` must be 0–1. A `#f` value returns `#f`
+  without updating the filter.
+
+Durations may be 0–30000 ms. State is cleared when telemetry becomes inactive
+or discontinuous; unused keys expire after 30 seconds. For example, retain a
+short overload spike long enough to be noticed:
+
+```scheme
+(define overload (telemetry t 'overload-g))
+(define overload-warning
+  (hold 'overload-warning
+    (and (number? overload) (> overload 8))
+    2000))
+```
+
+The stateless helpers `(clamp value minimum maximum)` and
+`(lerp start end amount)` are also available. `lerp` permits extrapolation;
+clamp its amount first when only the interval 0–1 is desired.
 
 ## Custom Metrics and History
 
@@ -158,7 +222,10 @@ span when the rule requires a substantially complete window:
   (value (if (number? loss)
              (format-value "IAS Δ " loss 0 " km/h")
              ""))
-  (visible (and (number? loss) (>= span 1500) (< loss -40)))
+  (visible
+    (hold 'rapid-loss-warning
+      (and (number? loss) (>= span 1500) (< loss -40))
+      2000))
   (text-style warning))
 ```
 

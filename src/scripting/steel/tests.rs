@@ -260,3 +260,95 @@ fn script_reload_preserves_telemetry_history() {
 
     assert_eq!(scene.nodes[0].text, "-25");
 }
+
+#[test]
+fn stateful_helpers_are_available_to_scripts() {
+    let mut engine = SteelHudScriptEngine::new();
+    engine
+        .load(
+            r#"
+              (define plain (style (shadow #f)))
+              (define (build-hud t)
+                (let ((raw (telemetry t 'ias-kmh))
+                      (dangerous (> (telemetry t 'ias-kmh) 150)))
+                  (let ((smooth (ema-filter 'smooth-ias raw 0.5))
+                        (edge (trigger-edge 'danger-edge dangerous 'rising))
+                        (held (hold 'danger-hold dangerous 1000))
+                        (stable (debounce 'danger-stable dangerous 500)))
+                    (list
+                      (text 'smooth (slot 'crosshair-top)
+                        (value (format-value "" smooth 0 "")))
+                      (text 'edge (slot 'crosshair-top) (value "edge")
+                        (visible edge))
+                      (text 'held (slot 'crosshair-top) (value "held")
+                        (visible held))
+                      (text 'stable (slot 'crosshair-top) (value "stable")
+                        (visible stable))
+                      (text 'math (slot 'crosshair-top)
+                        (value (format-value ""
+                          (+ (clamp 12 0 10) (lerp 0 10 0.5)) 0 "")))))))
+            "#,
+        )
+        .unwrap();
+    let start = Instant::now();
+
+    let initial = engine.evaluate(&timed_snapshot(1, start, 100.0)).unwrap();
+    assert_eq!(initial.nodes[0].text, "100");
+    assert_eq!(initial.nodes[1].id, "math");
+    assert_eq!(initial.nodes[1].text, "15");
+
+    let rising = engine
+        .evaluate(&timed_snapshot(
+            2,
+            start + Duration::from_millis(100),
+            200.0,
+        ))
+        .unwrap();
+    assert_eq!(rising.nodes[0].text, "150");
+    assert!(rising.nodes.iter().any(|node| node.id == "edge"));
+    assert!(rising.nodes.iter().any(|node| node.id == "held"));
+    assert!(rising.nodes.iter().all(|node| node.id != "stable"));
+
+    let debounced = engine
+        .evaluate(&timed_snapshot(
+            3,
+            start + Duration::from_millis(700),
+            200.0,
+        ))
+        .unwrap();
+    assert!(debounced.nodes.iter().all(|node| node.id != "edge"));
+    assert!(debounced.nodes.iter().any(|node| node.id == "stable"));
+}
+
+#[test]
+fn scripts_can_interpolate_colors_and_complete_styles() {
+    let mut engine = SteelHudScriptEngine::new();
+    engine
+        .load(
+            r##"
+              (define calm
+                (style (foreground "#000000") (font-size 10)
+                  (font-weight 'normal) (shadow #f) (blink-hz #f)))
+              (define danger
+                (style (foreground "#ffffff") (font-size 30)
+                  (font-weight 'bold) (shadow "#ff0000") (blink-hz 4)))
+              (define (build-hud t)
+                (list
+                  (text 'blended (slot 'crosshair-top) (value "blend")
+                    (text-style (style-blend calm danger 0.5)))
+                  (text 'color (slot 'crosshair-bottom)
+                    (value (color-lerp "#00ff00" "#ff0000" 0.5)))))
+            "##,
+        )
+        .unwrap();
+
+    let scene = engine.evaluate(&snapshot(0.0)).unwrap();
+    let blended = &scene.nodes[0].style;
+    assert!((blended.foreground.red - 128.0 / 255.0).abs() < 0.001);
+    assert!((blended.foreground.green - 128.0 / 255.0).abs() < 0.001);
+    assert_eq!(blended.font_size, 20.0);
+    assert_eq!(blended.weight, FontWeight::Bold);
+    assert_eq!(blended.blink_hz, Some(4.0));
+    assert!((blended.shadow.unwrap().alpha - 128.0 / 255.0).abs() < 0.001);
+    assert_eq!(scene.nodes[1].text, "#808000");
+}
