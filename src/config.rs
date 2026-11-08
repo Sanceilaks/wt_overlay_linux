@@ -7,6 +7,8 @@ use std::{
 
 use serde::Deserialize;
 
+use crate::layout;
+
 const MAX_INTERVAL_MS: u64 = 60_000;
 
 /// Operational settings which require an application restart when changed.
@@ -16,6 +18,7 @@ pub struct Config {
     pub script: PathBuf,
     pub poll_interval: Duration,
     pub request_timeout: Duration,
+    pub layout: layout::LayoutMetrics,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +28,8 @@ struct ConfigFile {
     script: PathBuf,
     poll_interval_ms: u64,
     request_timeout_ms: u64,
+    #[serde(default)]
+    layout: layout::LayoutMetrics,
 }
 
 #[derive(Debug)]
@@ -81,6 +86,7 @@ impl Config {
             script,
             poll_interval: Duration::from_millis(parsed.poll_interval_ms),
             request_timeout: Duration::from_millis(parsed.request_timeout_ms),
+            layout: parsed.layout,
         })
     }
 }
