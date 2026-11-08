@@ -15,7 +15,7 @@ use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
 use crate::{
     config::Config,
     latest::Latest,
-    layout::{LayoutEngine, LogicalSize, ShapedTextSize, TextMeasurer},
+    layout::{LayoutEngine, LayoutMetrics, LogicalSize, ShapedTextSize, TextMeasurer},
     overlay::{Overlay, OverlayRenderer},
     render::{RenderText, WgpuTextRenderer, bundled_font_system},
     scene::{FontWeight, Rgba, TextNode, TextScene},
@@ -70,7 +70,7 @@ fn run_overlay(config: &Config, scenes: Latest<TextScene>, scene_wake: PingSourc
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let (width, height, scale) = overlay.size_and_scale();
     renderer.resize(width, height, scale);
-    let renderer = SceneRenderer::new(renderer, scenes, width, height)?;
+    let renderer = SceneRenderer::new(renderer, scenes, width, height, config.layout)?;
     overlay
         .run(renderer, scene_wake)
         .map_err(|error| anyhow::anyhow!(error.to_string()))
@@ -196,6 +196,7 @@ impl SceneRenderer {
         scenes: Latest<TextScene>,
         width: u32,
         height: u32,
+        layout: LayoutMetrics,
     ) -> Result<Self> {
         let current = scenes
             .try_snapshot()
@@ -204,7 +205,7 @@ impl SceneRenderer {
             gpu,
             scenes,
             current,
-            layout: LayoutEngine::default(),
+            layout: LayoutEngine::new(layout)?,
             measurer: GlyphMeasurer::new(),
             logical_size: LogicalSize::new(width as f32, height as f32),
             started: Instant::now(),
