@@ -5,12 +5,27 @@ use std::{fmt, time::Duration};
 use crate::scene::{Slot, TextNode, TextScene};
 use slots::{HorizontalAlignment, VerticalPlacement, slot_layout};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+use serde::Deserialize;
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(default)]
 pub struct LayoutMetrics {
     pub safe_margin: f32,
     pub crosshair_radius: f32,
     pub inter_item_gap: f32,
 }
+
+impl PartialEq for LayoutMetrics {
+    fn eq(&self, other: &Self) -> bool {
+        self.safe_margin.total_cmp(&other.safe_margin) == std::cmp::Ordering::Equal
+        &&
+        self.crosshair_radius.total_cmp(&other.crosshair_radius) == std::cmp::Ordering::Equal
+        &&
+        self.inter_item_gap.total_cmp(&other.inter_item_gap) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for LayoutMetrics {}
 
 impl Default for LayoutMetrics {
     fn default() -> Self {

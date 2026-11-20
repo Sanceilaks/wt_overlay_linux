@@ -6,3 +6,8 @@ script = "hud.scm"
 
 poll_interval_ms = 100
 request_timeout_ms = 300
+
+[layout]
+safe_margin = 24.0
+crosshair_radius = 96.0
+inter_item_gap = 6.0
