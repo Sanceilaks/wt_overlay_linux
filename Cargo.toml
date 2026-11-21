@@ -25,6 +25,7 @@ include = [
 anyhow = "1.0.100"
 arc-swap = "1.7.1"
 calloop = "0.14.4"
+clap = { version = "4.6.9", features = ["derive"] }
 glyphon = "0.12.0"
 pollster = "0.4.0"
 raw-window-handle = "0.6.2"
