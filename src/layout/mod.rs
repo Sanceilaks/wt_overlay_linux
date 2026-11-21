@@ -18,10 +18,8 @@ pub struct LayoutMetrics {
 impl PartialEq for LayoutMetrics {
     fn eq(&self, other: &Self) -> bool {
         self.safe_margin.total_cmp(&other.safe_margin) == std::cmp::Ordering::Equal
-        &&
-        self.crosshair_radius.total_cmp(&other.crosshair_radius) == std::cmp::Ordering::Equal
-        &&
-        self.inter_item_gap.total_cmp(&other.inter_item_gap) == std::cmp::Ordering::Equal
+            && self.crosshair_radius.total_cmp(&other.crosshair_radius) == std::cmp::Ordering::Equal
+            && self.inter_item_gap.total_cmp(&other.inter_item_gap) == std::cmp::Ordering::Equal
     }
 }
 
