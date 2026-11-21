@@ -1,4 +1,5 @@
 pub mod app;
+pub mod args;
 pub mod config;
 pub mod latest;
 pub mod layout;
@@ -16,9 +17,8 @@ fn main() {
                 .unwrap_or_else(|_| "wt_overlay_linux=info".into()),
         )
         .init();
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config.toml".to_owned());
+    let cli = args::parse_args();
+    let config_path = cli.hud_scheme_path;
     if let Err(error) = app::run(&config_path) {
         tracing::error!(%error, "HUD terminated");
         std::process::exit(1);
